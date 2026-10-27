@@ -53,6 +53,35 @@ test('filename routing separates PDF slides, attachments, sources, and video', (
   assert.deepEqual(u.classifyFile('без-кода.pptx'), { code: null, kind: 'slides' });
 });
 
+test('LSN filenames normalize lesson numbers without guessing PDF presentation types', () => {
+  assert.deepEqual(u.classifyFile('LSN01-Intro.mp4'), { code: 'L01', kind: 'video' });
+  assert.deepEqual(u.classifyFile('LSN001_Intro.mp4'), { code: 'L01', kind: 'video' });
+  assert.deepEqual(u.classifyFile('LSN01-INTRO.pdf'), { code: 'L01', kind: 'file' });
+  assert.deepEqual(u.classifyFile('Модуль 1 — lsn-007_презентация.pdf'), { code: 'L07', kind: 'slides' });
+  assert.deepEqual(u.classifyFile('ＬＳＮ００１_Intro.mp4'), { code: 'L01', kind: 'video' });
+});
+
+test('LSN codes require Unicode letter/number boundaries and at most four digits', () => {
+  for (const name of ['ALSN01-Intro.mp4', '1LSN01-Intro.mp4', 'КLSN01-Intro.mp4', 'LSN01Intro.mp4', 'LSN01А.mp4', 'LSN01٢.mp4', 'LSN12345-Intro.mp4', 'LSN-Intro.mp4']) {
+    assert.equal(u.classifyFile(name).code, null, name);
+  }
+});
+
+test('inventory rerouting binds newly recognized inbox files and preserves valid manual assignments', () => {
+  const lessons = [{ id: 'first', code: 'L01' }, { id: 'second', code: 'L02' }];
+  const inbox = { name: 'LSN01-Intro.mp4', lessonId: null };
+  const assigned = { ...inbox, lessonId: 'second' };
+  const snapshots = structuredClone({ lessons, inbox, assigned });
+  const route = u.classifyFile(inbox.name);
+  assert.equal(u.resolveFileLessonId(inbox.name, route.code, lessons, inbox), 'first');
+  assert.equal(u.resolveFileLessonId(assigned.name, route.code, lessons, assigned), 'second');
+  assert.equal(u.resolveFileLessonId(inbox.name, route.code, lessons, { ...inbox, lessonId: 'deleted-lesson' }), 'first');
+  assert.equal(u.resolveFileLessonId('LSN02-Intro.mp4', 'L02', lessons, { ...inbox, lessonId: 'first' }), 'second');
+  assert.equal(u.resolveFileLessonId('Без кода.mp4', null, lessons), null);
+  assert.equal(u.resolveFileLessonId('Без кода.mp4', null, lessons, { name: 'Без кода.mp4', lessonId: 'second' }), 'second');
+  assert.deepEqual({ lessons, inbox, assigned }, snapshots);
+});
+
 test('recording counts independent of homework and duplicates do not create recordings', () => {
   const course = u.createCourse('Курс', 2, 1);
   course.lessons[0].recordedOn = u.today();

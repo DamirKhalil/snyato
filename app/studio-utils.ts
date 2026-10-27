@@ -1,4 +1,4 @@
-import type { AssetKind, Course, Lesson, Stage } from './studio-model';
+import type { AssetKind, Course, Lesson, Stage, StudioAsset } from './studio-model';
 
 const DAY = 86_400_000;
 const isoDate = /^\d{4}-\d{2}-\d{2}$/;
@@ -181,7 +181,7 @@ export function addHistory(course: Course, text: string): Course {
 
 export function classifyFile(name: string): { code: string | null; kind: AssetKind } {
   const normalized = name.normalize('NFKC');
-  const match = normalized.match(/(?:^|[^\p{L}\p{N}])(?:lesson|урок|l|л)\s*[-_ ]?\s*(\d{1,4})(?=$|[^\p{L}\p{N}])/iu);
+  const match = normalized.match(/(?:^|[^\p{L}\p{N}])(?:lesson|lsn|урок|l|л)\s*[-_ ]?\s*(\d{1,4})(?=$|[^\p{L}\p{N}])/iu);
   const code = match ? `L${String(Number(match[1])).padStart(2, '0')}` : null;
   const extension = normalized.split('.').pop()?.toLowerCase() || '';
   let kind: AssetKind = 'file';
@@ -190,6 +190,12 @@ export function classifyFile(name: string): { code: string | null; kind: AssetKi
   else if (/^(?:pptx?|key)$/iu.test(extension) || /(?:презентаци|slides?)/iu.test(normalized)) kind = 'slides';
   else if (/^(?:mp4|mov|mkv|avi|m4v|webm)$/iu.test(extension)) kind = 'video';
   return { code, kind };
+}
+
+/** Keep an existing assignment until the filename changes; newly recognized inbox files can still route. */
+export function resolveFileLessonId(name: string, code: string | null, lessons: Pick<Lesson, 'id' | 'code'>[], existing?: Pick<StudioAsset, 'name' | 'lessonId'>): string | null {
+  const retained = existing?.name === name && lessons.some(lesson => lesson.id === existing.lessonId) ? existing.lessonId : null;
+  return retained || lessons.find(lesson => lesson.code.toUpperCase() === code?.toUpperCase())?.id || null;
 }
 
 export type DeliveryStatus = {

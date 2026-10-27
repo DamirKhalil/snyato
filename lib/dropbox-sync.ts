@@ -1,7 +1,7 @@
 import { env } from 'cloudflare:workers';
 import { z } from 'zod';
 import type { Course, DropboxSyncState, StudioAsset, StudioState } from '@/app/studio-model';
-import { classifyFile, createCourse } from '@/app/studio-utils';
+import { classifyFile, createCourse, resolveFileLessonId } from '@/app/studio-utils';
 import { database, stateUpdateSchema, StudioError, validateStateRelations } from '@/lib/studio-server';
 
 const dropboxId = z.string().min(4).max(300).regex(/^id:[a-zA-Z0-9_-]+$/);
@@ -99,8 +99,7 @@ export function mergeDropboxSnapshot(state: StudioState, config: DropboxConfig, 
     const index = course.assets.findIndex(asset => asset.id === id);
     const old = index === -1 ? undefined : course.assets[index];
     const route = classifyFile(file.name);
-    const lessonId = course.lessons.find(lesson => lesson.code.toUpperCase() === route.code?.toUpperCase())?.id
-      || (old?.name === file.name ? old.lessonId : null) || null;
+    const lessonId = resolveFileLessonId(file.name, route.code, course.lessons, old);
     const fingerprint = 'dropbox:' + file.id + ':' + file.modifiedAt + ':' + file.size;
     const asset: StudioAsset = {
       id, name: file.name, size: file.size, mime: file.mime || mimeTypes[file.name.split('.').at(-1)?.toLowerCase() || ''] || 'application/octet-stream',
