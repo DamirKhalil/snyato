@@ -53,11 +53,11 @@
 .studio-home-delivery-note svg { flex-shrink:0; margin-top:2px; }
 .studio-home-section-heading { display:flex; align-items:center; justify-content:space-between; gap:14px; margin-bottom:12px; }
 .studio-dashboard .studio-home-section-heading h3 { font:500 15px/1.5 'Golos Text',sans-serif; letter-spacing:-.1px; }
-.studio-home-lesson-row { display:grid; grid-template-columns:35px minmax(0,1fr) auto; gap:13px; width:100%; align-items:center; text-align:left; background:transparent; color:var(--studio-ink,#292626); border:0; border-bottom:1px solid var(--studio-line,#e1dcd8); padding:15px 0; }
+.studio-home-lesson-row { display:grid; grid-template-columns:35px minmax(0,1fr) 110px; gap:13px; width:100%; align-items:start; text-align:left; background:transparent; color:var(--studio-ink,#292626); border:0; border-bottom:1px solid var(--studio-line,#e1dcd8); padding:15px 12px; }
 .studio-home-lesson-row:hover { background:var(--studio-soft,#f4e9eb); }
 .studio-home-lesson-row strong { display:block; font-size:12px; font-weight:500; line-height:1.6; }
 .studio-home-lesson-row small { display:block; font-size:11px; color:var(--studio-muted,#736b69); line-height:1.5; margin-top:3px; }
-.studio-home-lesson-row>span:last-child { color:var(--studio-muted,#736b69); font-size:11px; line-height:1.6; text-align:right; max-width:110px; }
+.studio-home-lesson-row>.studio-home-lesson-status { display:block; align-self:start; min-height:3.2em; color:var(--studio-muted,#736b69); font-size:11px; line-height:1.6; text-align:right; overflow-wrap:normal; }
 .studio-home-team-counts { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:13px; padding:13px 0 19px; }
 .studio-home-team-counts strong { display:block; font-size:25px; font-weight:500; line-height:1.2; font-variant-numeric:tabular-nums; }
 .studio-home-team-counts span { display:block; color:var(--studio-muted,#736b69); font-size:11px; line-height:1.5; margin-top:5px; }
@@ -138,8 +138,7 @@
   .studio-dashboard .studio-home-next h2 { font-size:24px; }
   .studio-home-next-dates { gap:16px; }
   .studio-home-next-dates strong { font-size:15px; }
-  .studio-home-lesson-row { gap:9px; grid-template-columns:32px minmax(0,1fr) auto; }
-  .studio-home-lesson-row>span:last-child { max-width:80px; }
+  .studio-home-lesson-row { gap:9px; grid-template-columns:32px minmax(0,1fr) 80px; padding:12px 10px; }
   .studio-home-section-heading { align-items:baseline; gap:10px; }
   .studio-home-section-heading .studio-text-link { font-size:11px!important; }
   .studio-chart-legend { gap:10px 14px; }
