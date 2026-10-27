@@ -1,5 +1,5 @@
 export type Stage = 'assembling' | 'ready' | 'taken' | 'published';
-export type AssetKind = 'video' | 'slides' | 'file' | 'source' | 'outline';
+export type AssetKind = 'video' | 'slides' | 'file' | 'source' | 'outline' | 'homework';
 export type StudioAsset = { id: string; name: string; size: number; mime: string; kind: AssetKind; lessonId: string | null; url: string; createdAt: string; fingerprint?: string; source?: 'upload' | 'dropbox'; directLink?: boolean };
 export type Lesson = {
   id: string; code: string; title: string; moduleId: string; order: number;

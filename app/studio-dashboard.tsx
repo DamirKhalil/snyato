@@ -2,8 +2,8 @@
 
 import type { ReactNode } from 'react';
 import { ArrowRight, ArrowUpRight, CalendarDays, Check, CircleDashed } from 'lucide-react';
-import type { Course, Lesson } from './studio-model';
-import { getDeliveryStatus, getMetrics, today, prepDate } from './studio-utils';
+import { STAGE_LABELS, type Course, type Lesson } from './studio-model';
+import { getDeliveryStatus, getMetrics, today, prepDate, lessonHasHomework } from './studio-utils';
 import { ProgressChart } from './studio-charts';
 import './dashboard.css';
 
@@ -12,23 +12,24 @@ type Props = { course: Course; onOpenLesson: (id: string) => void; onNavigate: (
 const asTime = (date: string) => Date.parse(`${date}T12:00:00Z`);
 const formatDate = (date: string) => new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long', timeZone: 'UTC' }).format(new Date(asTime(date)));
 const plural = (n: number, one: string, few: string, many: string) => n % 100 >= 11 && n % 100 <= 14 ? many : n % 10 === 1 ? one : n % 10 >= 2 && n % 10 <= 4 ? few : many;
-const hasHomework = (lesson: Lesson) => lesson.homework.some(task => task.trim());
 
 export default function StudioDashboard({ course, onOpenLesson, onNavigate, command }: Props) {
   const now = today(course.timezone);
+  const hasHomework = (lesson: Lesson) => lessonHasHomework(course, lesson);
   const metrics = getMetrics(course);
   const { count, recorded, remaining, percent } = metrics;
   const lessons = [...course.lessons].sort((a, b) => a.order - b.order);
-  const pending = lessons.filter(lesson => !lesson.recordedOn);
+  const pending = lessons.filter(lesson => !lesson.recordedOn && lesson.stage === 'assembling');
   const planned = [...pending].sort((a, b) => (a.scheduledDate || '9999').localeCompare(b.scheduledDate || '9999') || a.order - b.order);
   const next = metrics.prepDue[0] || metrics.nextLesson || pending[0] || null;
   const nextPrep = next ? prepDate(next) : null;
   const nextDelivery = metrics.nextDelivery;
   const handedOff = lessons.filter(lesson => lesson.submittedAt || lesson.stage !== 'assembling').length;
+  const allHandedOff = count > 0 && lessons.every(lesson => lesson.stage !== 'assembling');
   const recordedMinutes = Math.round(metrics.minutes);
   const duration = recordedMinutes >= 60 ? `${Math.floor(recordedMinutes / 60)} ч${recordedMinutes % 60 ? ` ${recordedMinutes % 60} мин` : ''}` : `${recordedMinutes} мин`;
   const weekday = new Intl.DateTimeFormat('ru-RU', { weekday: 'long', timeZone: 'UTC' }).format(new Date(asTime(now)));
-  const upcoming = pending.length ? planned.slice(0, 3) : lessons.filter(lesson => lesson.recordedOn && lesson.recordedOn <= now).slice(-3);
+  const upcoming = pending.length ? planned.slice(0, 3) : lessons.filter(lesson => lesson.stage !== 'assembling' || lesson.recordedOn && lesson.recordedOn <= now).slice(-3);
   const moduleName = (lesson: Lesson) => course.modules.find(module => module.id === lesson.moduleId)?.title || 'Без модуля';
   const needsPreparation = !!next && (!next.outlineReady || !hasHomework(next) || (next.slidesRequired && !next.slidesReady));
   const missedRecording = !!next?.scheduledDate && next.scheduledDate < now;
@@ -74,7 +75,7 @@ export default function StudioDashboard({ course, onOpenLesson, onNavigate, comm
           <button type="button" className="studio-home-primary" onClick={() => onOpenLesson(next.id)}>{!next.scheduledDate ? 'Назначить дату' : needsPreparation && !missedRecording ? 'Продолжить подготовку' : 'Открыть урок'}<ArrowUpRight size={17} /></button>
         </> : <>
           <div className="studio-home-next-top"><p className="studio-eyebrow">Следующее действие</p><Check size={18} /></div>
-          <h2>{count ? 'Все уроки записаны' : 'Начни с программы курса'}</h2>
+          <h2>{count ? allHandedOff ? 'Все комплекты переданы' : recorded === count ? 'Все уроки записаны' : 'Осталось собрать комплекты' : 'Начни с программы курса'}</h2>
           <p className="studio-home-next-copy">{count ? assemblingRecorded > 0 ? 'Теперь можно собрать оставшиеся комплекты и передать их команде.' : 'Следи за размещением и изменениями комплектов в очереди команды.' : 'Добавь темы и модули. Затем выбери даты записи и сроки передачи комплектов.'}</p>
           <button type="button" className="studio-home-primary" onClick={() => onNavigate(count ? assemblingRecorded > 0 ? 'program' : 'team' : 'program')}>{count ? assemblingRecorded > 0 ? 'Собрать комплекты' : 'Открыть очередь команды' : 'Открыть программу'}<ArrowUpRight size={17} /></button>
         </>}
@@ -87,7 +88,7 @@ export default function StudioDashboard({ course, onOpenLesson, onNavigate, comm
           <p className="studio-home-code">{nextDelivery.code}{nextDelivery.recordedOn ? ` · записан ${formatDate(nextDelivery.recordedOn)}` : ' · ещё не записан'}</p>
           <h2>{nextDelivery.title}</h2>
           <p className="studio-home-delivery-status">{getDeliveryStatus(nextDelivery, course.timezone, now).label}</p>
-          <p className="studio-home-delivery-copy">Проверь видео, готовый план, домашнее задание и презентацию, если она нужна.</p>
+          <p className="studio-home-delivery-copy">Проверь видео и домашнее задание. Дополнительные материалы — по необходимости.</p>
           <button type="button" className="studio-text-link" onClick={() => onOpenLesson(nextDelivery.id)}>Проверить комплект<ArrowRight size={16} /></button>
         </> : <>
           <h2 className="studio-home-no-deadline">{lessons.some(lesson => lesson.stage === 'assembling' && !lesson.submittedAt) ? 'Сроки ещё не назначены' : count ? 'Нет ожидающих сдач' : 'У каждого урока свой срок'}</h2>
@@ -100,13 +101,13 @@ export default function StudioDashboard({ course, onOpenLesson, onNavigate, comm
 
     <div className="studio-home-lower">
       <section className="studio-home-upcoming">
-        <div className="studio-home-section-heading"><h3>{pending.length ? 'Ближайшие уроки' : 'Записанные уроки'}</h3><button type="button" className="studio-text-link" onClick={() => onNavigate('program')}>Вся программа<ArrowUpRight size={15} /></button></div>
-        {upcoming.length ? <div>{upcoming.map(lesson => <button type="button" className="studio-home-lesson-row" key={lesson.id} onClick={() => onOpenLesson(lesson.id)}><span className="studio-home-code">{lesson.code}</span><span><strong>{lesson.title}</strong><small>{moduleName(lesson)}</small></span><span className="studio-home-lesson-status">{lesson.recordedOn && lesson.recordedOn <= now ? <>Записан<br />{formatDate(lesson.recordedOn)}</> : lesson.scheduledDate ? <>Запись<br />{formatDate(lesson.scheduledDate)}</> : 'Без даты'}</span></button>)}</div> : <p className="studio-home-empty-copy">Уроки появятся здесь после добавления в программу.</p>}
+        <div className="studio-home-section-heading"><h3>{pending.length ? 'Ближайшие уроки' : recorded === count ? 'Записанные уроки' : allHandedOff ? 'Переданные уроки' : 'Последние уроки'}</h3><button type="button" className="studio-text-link" onClick={() => onNavigate('program')}>Вся программа<ArrowUpRight size={15} /></button></div>
+        {upcoming.length ? <div>{upcoming.map(lesson => <button type="button" className="studio-home-lesson-row" key={lesson.id} onClick={() => onOpenLesson(lesson.id)}><span className="studio-home-code">{lesson.code}</span><span><strong>{lesson.title}</strong><small>{moduleName(lesson)}</small></span><span className="studio-home-lesson-status">{lesson.recordedOn && lesson.recordedOn <= now ? <>Записан<br />{formatDate(lesson.recordedOn)}</> : lesson.scheduledDate ? <>Запись<br />{formatDate(lesson.scheduledDate)}</> : lesson.stage !== 'assembling' ? STAGE_LABELS[lesson.stage] : 'Без даты'}</span></button>)}</div> : <p className="studio-home-empty-copy">Уроки появятся здесь после добавления в программу.</p>}
       </section>
       <section className="studio-home-team">
         <div className="studio-home-section-heading"><h3>Передача команде</h3><button type="button" className="studio-text-link" onClick={() => onNavigate('team')} aria-label="Открыть команду и очередь размещения"><ArrowUpRight size={17} /></button></div>
         <div className="studio-home-team-counts"><div><strong>{metrics.allStageCounts.ready}</strong><span>ожидают работы</span></div><div><strong>{metrics.allStageCounts.taken}</strong><span>в работе</span></div><div><strong>{metrics.allStageCounts.published}</strong><span>размещено</span></div></div>
-        <p className="studio-home-team-note">{assemblingRecorded > 0 ? `${assemblingRecorded} ${plural(assemblingRecorded, 'записанный урок ещё собирается', 'записанных урока ещё собираются', 'записанных уроков ещё собираются')}.` : recorded ? 'Все записанные уроки переданы команде.' : 'Собранные комплекты появятся в очереди после передачи.'}</p>
+        <p className="studio-home-team-note">{assemblingRecorded > 0 ? `${assemblingRecorded} ${plural(assemblingRecorded, 'записанный урок ещё собирается', 'записанных урока ещё собираются', 'записанных уроков ещё собираются')}.` : handedOff ? 'Материалы, статус и исполнитель — в рабочем месте команды.' : 'Собранные комплекты появятся в очереди после передачи.'}</p>
         <button type="button" className="studio-text-link" onClick={() => onNavigate('team')}>Открыть очередь<ArrowRight size={16} /></button>
       </section>
     </div>

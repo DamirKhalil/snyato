@@ -2,6 +2,7 @@ import { env } from 'cloudflare:workers';
 import { z } from 'zod';
 import { getChatGPTUser } from '@/app/chatgpt-auth';
 import type { Member, StudioResponse, StudioState, StudioUser } from '@/app/studio-model';
+import { checkLessonReadiness, getLessonVideo } from '@/app/studio-utils';
 
 const WORKSPACE_ID = 'main';
 export const MAX_FILE_BYTES = 50 * 1024 * 1024;
@@ -147,7 +148,7 @@ const courseSchema = z.object({
   }, 'Неизвестный часовой пояс'), isDemo: z.boolean(), createdAt: timestamp,
   modules: z.array(z.object({ id, title: text(1000) })).min(1).max(200),
   lessons: z.array(lessonSchema).max(3000),
-  assets: z.array(z.object({ id, name: text(2000), size: z.number().finite().min(0), mime: text(300), kind: z.enum(['video', 'slides', 'file', 'source', 'outline']), lessonId: id.nullable(), url: assetUrl, createdAt: timestamp, fingerprint: text(4000).optional(), source: z.enum(['upload', 'dropbox']).optional(), directLink: z.boolean().optional() })).max(10000),
+  assets: z.array(z.object({ id, name: text(2000), size: z.number().finite().min(0), mime: text(300), kind: z.enum(['video', 'slides', 'file', 'source', 'outline', 'homework']), lessonId: id.nullable(), url: assetUrl, createdAt: timestamp, fingerprint: text(4000).optional(), source: z.enum(['upload', 'dropbox']).optional(), directLink: z.boolean().optional() })).max(10000),
   baselineLockedAt: timestamp.nullable(), initialPlannedCount: z.number().int().min(0).max(100000),
   history: z.array(z.object({ id, at: timestamp, text: text(10000) })).max(3000),
 });
@@ -184,11 +185,8 @@ function todayInTimezone(timezone: string): string {
 }
 
 async function sourceIdentity(course: StudioState['courses'][number], lesson: StudioState['courses'][number]['lessons'][number]): Promise<string | null> {
-  if (lesson.videoId) {
-    const asset = course.assets.find(item => item.id === lesson.videoId && item.lessonId === lesson.id && item.kind === 'video');
-    return asset?.id || null;
-  }
-  const link = lesson.links.find(item => /видео|запис/i.test(item.name));
+  const { asset, link } = getLessonVideo(course, lesson);
+  if (asset) return asset.id;
   if (!link) return null;
   const bytes = new TextEncoder().encode(new URL(link.url).href);
   const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
@@ -220,6 +218,7 @@ export async function validateLifecycle(state: StudioState, previous: StudioStat
       }
       // Demo lessons are explicitly labelled fixtures, with no fabricated file uploads.
       if (course.isDemo) continue;
+      if (lesson.videoId && !getLessonVideo(course, lesson).asset) lesson.videoId = null;
       const source = await sourceIdentity(course, lesson);
       const oldSource = old && oldCourse ? await sourceIdentity(oldCourse, old) : null;
       if (old && source !== oldSource && old.stage !== 'assembling' && lesson.stage === old.stage) lesson.changesPending = true;
@@ -234,18 +233,8 @@ export async function validateLifecycle(state: StudioState, previous: StudioStat
         }
       }
       if (lesson.stage === old?.stage || lesson.stage === 'assembling') continue;
-      const problems: string[] = [];
-      const assets = course.assets.filter(item => item.lessonId === lesson.id);
-      if (!lesson.title.trim()) problems.push('название');
-      if (!lesson.recordedOn) problems.push('фактическая дата записи');
-      if (!source) problems.push('выбранное видео или ссылка «Видео урока»');
-      if (!lesson.homework.some(item => item.trim())) problems.push('домашнее задание');
-      if (!lesson.outlineReady || !(lesson.outline.trim() || assets.some(item => item.kind === 'outline') || lesson.links.some(item => /план|сценарий|outline/i.test(item.name)))) problems.push('готовый план урока');
-      if (lesson.slidesRequired && (!lesson.slidesReady || !(assets.some(item => item.kind === 'slides') || lesson.links.some(item => /презентац|slides/i.test(item.name))))) problems.push('готовая презентация');
-      if (problems.length) throw new StudioError(400, `${lesson.code}: для передачи комплекта нужны ${problems.join(', ')}.`);
-      if (lesson.stage === 'published' && lesson.timecodes.trim() && lesson.timecodesStatus !== 'checked') {
-        throw new StudioError(400, `${lesson.code}: перед размещением проверь оглавление с тайм-кодами.`);
-      }
+      const problems = checkLessonReadiness(course, lesson, { forPublication: lesson.stage === 'published' });
+      if (problems.length) throw new StudioError(400, `${lesson.code}: ${problems.join('; ')}.`);
     }
   }
 }

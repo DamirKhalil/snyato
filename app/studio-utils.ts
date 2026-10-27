@@ -179,6 +179,8 @@ export function addHistory(course: Course, text: string): Course {
   return course;
 }
 
+const homeworkMarker = /(?:^|[^\p{L}\p{N}])(?:дз|homework|domashnee(?:[._\s-]+zadanie)?|домашн(?:ее|ие|его|ему|им|ем|их|юю|яя|ей)[._\s-]+задани[еяюйем]*)(?=$|[^\p{L}\p{N}])/iu;
+
 export function classifyFile(name: string): { code: string | null; kind: AssetKind } {
   const normalized = name.normalize('NFKC');
   const match = normalized.match(/(?:^|[^\p{L}\p{N}])(?:lesson|lsn|урок|l|л)\s*[-_ ]?\s*(\d{1,4})(?=$|[^\p{L}\p{N}])/iu);
@@ -186,6 +188,7 @@ export function classifyFile(name: string): { code: string | null; kind: AssetKi
   const extension = normalized.split('.').pop()?.toLowerCase() || '';
   let kind: AssetKind = 'file';
   if (/(?:исходник|source|master|\.screenflow\b|проект)/iu.test(normalized)) kind = 'source';
+  else if (homeworkMarker.test(normalized)) kind = 'homework';
   else if (/(?:план(?:[._\s-]|$)|outline|сценарий)/iu.test(normalized)) kind = 'outline';
   else if (/^(?:pptx?|key)$/iu.test(extension) || /(?:презентаци|slides?)/iu.test(normalized)) kind = 'slides';
   else if (/^(?:mp4|mov|mkv|avi|m4v|webm)$/iu.test(extension)) kind = 'video';
@@ -276,7 +279,7 @@ export function getMetrics(course: Course): CourseMetrics {
   const currentDates = course.lessons.map(lesson => lesson.scheduledDate).filter((date): date is string => !!date).sort();
   const baselineDates = course.lessons.map(lesson => lesson.baselineDate).filter((date): date is string => !!date).sort();
   const currentFinish = currentDates.at(-1) || null, baselineFinish = baselineDates.at(-1) || null;
-  const pending = course.lessons.filter(lesson => !lesson.recordedOn);
+  const pending = course.lessons.filter(lesson => !lesson.recordedOn && lesson.stage === 'assembling');
   const upcoming = pending.filter(lesson => !!lesson.scheduledDate && lesson.scheduledDate >= now).sort((a, b) => a.scheduledDate!.localeCompare(b.scheduledDate!) || a.order - b.order);
   const overdueRecords = pending.filter(lesson => !!lesson.scheduledDate && lesson.scheduledDate < now).sort((a, b) => a.scheduledDate!.localeCompare(b.scheduledDate!));
   const prepDue = pending.filter(lesson => {
@@ -304,24 +307,48 @@ export function getMetrics(course: Course): CourseMetrics {
 }
 
 function validURL(value: string): boolean {
-  try { return ['https:', 'http:'].includes(new URL(value).protocol); } catch { return false; }
+  try {
+    const url = new URL(value);
+    return ['https:', 'http:'].includes(url.protocol) && !url.username && !url.password;
+  } catch { return false; }
 }
 
-export function checkLessonReadiness(course: Course, lesson: Lesson, options: { requireTimecodes?: boolean } = {}): string[] {
+function validAssetURL(value: string): boolean {
+  return validURL(value) || /^\/api\/assets\/[a-f0-9-]{36}$/.test(value);
+}
+
+/** A selected lesson video takes priority; a valid named video link is a fallback. */
+export function getLessonVideo(course: Course, lesson: Lesson): { asset: StudioAsset | null; link: Lesson['links'][number] | null } {
+  const asset = course.assets.find(item => item.id === lesson.videoId && item.lessonId === lesson.id && item.kind === 'video' && validAssetURL(item.url)) || null;
+  const link = asset ? null : lesson.links.find(item => /(?:видео|запис|(?:^|[^\p{L}\p{N}])video(?=$|[^\p{L}\p{N}]))/iu.test(item.name) && validURL(item.url)) || null;
+  return { asset, link };
+}
+
+export function getHomeworkMaterials(course: Course, lesson: Lesson): { text: string[]; assets: StudioAsset[]; links: Lesson['links'] } {
+  return {
+    text: lesson.homework.map(task => task.trim()).filter(Boolean),
+    assets: course.assets.filter(asset => asset.lessonId === lesson.id && asset.kind === 'homework' && validAssetURL(asset.url)),
+    links: lesson.links.filter(link => homeworkMarker.test(link.name.normalize('NFKC')) && validURL(link.url)),
+  };
+}
+
+export function lessonHasHomework(course: Course, lesson: Lesson): boolean {
+  const homework = getHomeworkMaterials(course, lesson);
+  return homework.text.length + homework.assets.length + homework.links.length > 0;
+}
+
+/** The handoff package is video + homework; supplied timecodes are checked before publishing. */
+export function checkLessonReadiness(course: Course, lesson: Lesson, options: { requireTimecodes?: boolean; forPublication?: boolean } = {}): string[] {
   const missing: string[] = [];
-  if (!lesson.title.trim() || /^урок\s+\d+$/iu.test(lesson.title.trim())) missing.push('Уточнить название урока');
-  const assets = course.assets.filter(asset => asset.lessonId === lesson.id);
-  const video = assets.find(asset => asset.id === lesson.videoId && asset.kind === 'video');
-  const videoLink = lesson.links.some(link => /(?:видео|запись)/iu.test(link.name) && validURL(link.url));
-  if (!video && !videoLink) missing.push('Добавить финальное видео или ссылку с подписью «Видео»');
-  if (!lesson.homework.some(task => task.trim())) missing.push('Добавить домашнее задание');
-  if (lesson.slidesRequired) {
-    const hasSlides = assets.some(asset => asset.kind === 'slides') || lesson.links.some(link => /(?:презентаци|slides)/iu.test(link.name) && validURL(link.url));
-    if (!hasSlides) missing.push('Добавить презентацию');
-    if (!lesson.slidesReady) missing.push('Отметить презентацию готовой');
-  }
+  if (!lesson.title.trim()) missing.push('Добавить название урока');
+  const video = getLessonVideo(course, lesson);
+  if (!video.asset && !video.link) missing.push('Добавить финальное видео или ссылку с подписью «Видео»');
+  if (!lessonHasHomework(course, lesson)) missing.push('Добавить домашнее задание: текст, файл ДЗ или ссылку с подписью «ДЗ»');
   if (options.requireTimecodes && !lesson.timecodes.trim()) missing.push('Добавить оглавление с тайм-кодами');
-  if (lesson.timecodes.trim() && lesson.timecodesVideoId && lesson.videoId && lesson.timecodesVideoId !== lesson.videoId) missing.push('Проверить тайм-коды после замены видео');
+  if (options.forPublication && lesson.timecodes.trim()) {
+    const staleSource = !!lesson.timecodesVideoId && (video.asset ? lesson.timecodesVideoId !== video.asset.id : !lesson.timecodesVideoId.startsWith('link:'));
+    if (lesson.timecodesStatus !== 'checked' || staleSource) missing.push('Проверить тайм-коды для актуальной записи перед размещением');
+  }
   return missing;
 }
 

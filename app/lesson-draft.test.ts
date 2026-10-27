@@ -105,6 +105,54 @@ test('a changed video link conflicts with a review of the previous link', () => 
   assert.ok(result.conflicts.includes('timecodesStatus'));
 });
 
+test('English Video links participate in source versus timecode review conflicts', () => {
+  const base = { ...lesson(), links: [{ name: 'Video lesson', url: 'https://example.com/video-1' }], timecodes: '00:00 Введение' };
+  const reviewed: Lesson = { ...base, timecodesStatus: 'checked' };
+  const incoming = { ...base, links: [{ name: 'Video lesson', url: 'https://example.com/video-2' }] };
+  const result = mergeLessonDraft(base, reviewed, incoming);
+  assert.equal(result.merged, null);
+  assert.ok(result.conflicts.includes('links'));
+  assert.ok(result.conflicts.includes('timecodesStatus'));
+});
+
+test('an invalid first named video link does not mask a valid later source change', () => {
+  const invalid = { name: 'Видео, старая ссылка', url: 'javascript:alert(1)' };
+  const base = { ...lesson(), links: [invalid, { name: 'Video', url: 'https://example.com/video-1' }], timecodes: '00:00 Введение' };
+  const reviewed: Lesson = { ...base, timecodesStatus: 'checked' };
+  const incoming = { ...base, links: [invalid, { name: 'Video', url: 'https://example.com/video-2' }] };
+  assert.equal(mergeLessonDraft(base, reviewed, incoming).merged, null);
+});
+
+test('a selected ID cannot hide fallback link changes during a timecode review', () => {
+  const base = { ...lesson(), videoId: 'possibly-removed-video', links: [{ name: 'Видео', url: 'https://example.com/video-1' }], timecodes: '00:00 Введение' };
+  const reviewed: Lesson = { ...base, timecodesStatus: 'checked', timecodesVideoId: base.videoId };
+  const incoming = { ...base, links: [{ name: 'Видео', url: 'https://example.com/video-2' }] };
+  const result = mergeLessonDraft(base, reviewed, incoming);
+  assert.equal(result.merged, null);
+  assert.ok(result.conflicts.includes('links'));
+});
+
+test('ordinary links can merge with homework and plan edits without becoming video sources', () => {
+  const base = { ...lesson(), videoId: 'video-1', timecodes: '00:00 Введение' };
+  const local: Lesson = { ...base, homework: ['Новое задание'], outline: 'Новый план', timecodesStatus: 'checked', timecodesVideoId: 'video-1' };
+  const incoming = { ...base, links: [...base.links, { name: 'Videography notes', url: 'https://example.com/notes' }] };
+  const { merged, conflicts } = mergeLessonDraft(base, local, incoming);
+  assert.deepEqual(conflicts, []);
+  assert.deepEqual(merged?.homework, local.homework);
+  assert.equal(merged?.outline, local.outline);
+  assert.equal(merged?.timecodesStatus, 'checked');
+  assert.deepEqual(merged?.links, incoming.links);
+});
+
+test('equivalent normalized video URLs do not invalidate an independent review', () => {
+  const base = { ...lesson(), links: [{ name: 'Video', url: 'https://EXAMPLE.com' }], timecodes: '00:00 Введение' };
+  const reviewed: Lesson = { ...base, timecodesStatus: 'checked' };
+  const incoming = { ...base, links: [{ name: 'Video', url: 'https://example.com/' }] };
+  const { merged, conflicts } = mergeLessonDraft(base, reviewed, incoming);
+  assert.deepEqual(conflicts, []);
+  assert.equal(merged?.timecodesStatus, 'checked');
+});
+
 test('editing draft timecodes also conflicts with a source change in the other branch', () => {
   const base = { ...lesson(), videoId: 'video-1', timecodes: '00:00 Введение' };
   const result = mergeLessonDraft(base, { ...base, timecodes: '00:00 Новое введение' }, { ...base, videoId: 'video-2' });

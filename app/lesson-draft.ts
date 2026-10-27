@@ -5,13 +5,21 @@ const same = (left: unknown, right: unknown) => JSON.stringify(left) === JSON.st
 const timecodeFields: (keyof Lesson)[] = ['timecodes', 'timecodesStatus', 'timecodesVideoId'];
 
 function videoSource(lesson: Lesson): string | null {
-  if (lesson.videoId) return `video:${lesson.videoId}`;
-  const link = lesson.links.find(item => /видео|запис/i.test(item.name));
-  if (!link) return null;
-  try {
-    const url = new URL(link.url);
-    return ['https:', 'http:'].includes(url.protocol) && !url.username && !url.password ? `link:${url.href}` : null;
-  } catch { return null; }
+  // Keep the named-link marker and URL rules aligned with getLessonVideo.
+  // This pure merge has no course assets: retain both candidates so a dangling
+  // selected ID cannot hide a concurrent edit of its fallback video link.
+  let videoLink: string | null = null;
+  for (const link of lesson.links) {
+    if (!/(?:видео|запис|(?:^|[^\p{L}\p{N}])video(?=$|[^\p{L}\p{N}]))/iu.test(link.name)) continue;
+    try {
+      const url = new URL(link.url);
+      if (['https:', 'http:'].includes(url.protocol) && !url.username && !url.password) {
+        videoLink = url.href;
+        break;
+      }
+    } catch { /* An invalid earlier link must not hide a later valid one. */ }
+  }
+  return lesson.videoId || videoLink ? JSON.stringify([lesson.videoId, videoLink]) : null;
 }
 
 /** Merge independent field changes; arrays remain atomic to avoid guessing at edits. */

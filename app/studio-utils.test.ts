@@ -214,4 +214,125 @@ test('delivery metrics exclude completed handoffs and sort pending due dates', (
   assert.equal(u.getDeliveryStatus(course.lessons[3], course.timezone).kind, 'late');
 });
 
+test('handoff readiness is video and homework even without dates, plan or slides', () => {
+  const course = u.createCourse('Курс', 1, 1), lesson = course.lessons[0];
+  lesson.title = 'Урок 1';
+  lesson.homework = ['Повторить пример'];
+  lesson.slidesRequired = true; lesson.slidesReady = false;
+  course.assets.push({ id: 'video-1', name: 'L01.mp4', size: 1024, mime: 'video/mp4', kind: 'video', lessonId: lesson.id, url: 'https://example.test/video.mp4', createdAt: course.createdAt });
+  lesson.videoId = 'video-1';
+  const before = structuredClone(course);
+  assert.deepEqual(u.checkLessonReadiness(course, lesson), []);
+  assert.equal(u.getMetrics(course).recorded, 0);
+  assert.equal(lesson.recordedOn, null); assert.equal(lesson.submittedAt, null);
+  assert.deepEqual(course, before);
+  lesson.title = '  ';
+  assert.equal(u.checkLessonReadiness(course, lesson).some((item: string) => item.includes('название')), true);
+});
+
+test('a selected lesson video or valid named video link is required', () => {
+  const course = u.createCourse('Курс', 2, 1), lesson = course.lessons[0];
+  lesson.homework = ['Задание'];
+  course.assets.push({ id: 'video-1', name: 'L01.mp4', size: 1024, mime: 'video/mp4', kind: 'video', lessonId: course.lessons[1].id, url: 'https://example.test/video.mp4', createdAt: course.createdAt });
+  lesson.videoId = 'video-1';
+  assert.equal(u.checkLessonReadiness(course, lesson).some((item: string) => item.includes('видео')), true);
+  lesson.links = [{ name: 'Видео урока', url: 'https://example.test/final-video' }];
+  assert.equal(u.getLessonVideo(course, lesson).asset, null);
+  assert.equal(u.getLessonVideo(course, lesson).link.url, lesson.links[0].url);
+  assert.deepEqual(u.checkLessonReadiness(course, lesson), []);
+  for (const link of [
+    { name: 'Материалы', url: 'https://example.test/video.mp4' },
+    { name: 'Видео', url: 'javascript:invalid' },
+    { name: 'Видео', url: 'https://user:password@example.test/video.mp4' },
+  ]) {
+    lesson.links = [link];
+    assert.equal(u.getLessonVideo(course, lesson).link, null);
+  }
+});
+
+test('homework accepts text, explicitly typed files or valid named links', () => {
+  const course = u.createCourse('Курс', 2, 1), lesson = course.lessons[0];
+  lesson.homework = ['  '];
+  const attachment = { id: 'homework-1', name: 'L01_homework.pdf', size: 1024, mime: 'application/pdf', kind: 'file', lessonId: lesson.id, url: 'https://example.test/homework.pdf', createdAt: course.createdAt };
+  course.assets.push(attachment);
+  assert.equal(u.lessonHasHomework(course, lesson), false, 'filename alone does not reinterpret a stored file kind');
+  attachment.kind = 'homework';
+  assert.equal(u.lessonHasHomework(course, lesson), true);
+  assert.deepEqual(u.getHomeworkMaterials(course, lesson).assets, [attachment]);
+  attachment.lessonId = course.lessons[1].id;
+  assert.equal(u.lessonHasHomework(course, lesson), false);
+  for (const name of ['ДЗ', 'Домашнее задание', 'Homework', 'domashnee zadanie']) {
+    lesson.links = [{ name, url: 'https://example.test/homework' }];
+    assert.equal(u.lessonHasHomework(course, lesson), true, name);
+    assert.equal(u.getHomeworkMaterials(course, lesson).links.length, 1);
+  }
+  lesson.links = [{ name: 'Материал', url: 'https://example.test/homework.pdf' }];
+  assert.equal(u.lessonHasHomework(course, lesson), false);
+  lesson.links = [{ name: 'ДЗ', url: 'javascript:invalid' }];
+  assert.equal(u.lessonHasHomework(course, lesson), false);
+  lesson.homework = ['  Сделать упражнение  '];
+  assert.deepEqual(u.getHomeworkMaterials(course, lesson).text, ['Сделать упражнение']);
+  assert.equal(u.lessonHasHomework(course, lesson), true);
+});
+
+test('homework filename markers are explicit and preserve existing routing decisions', () => {
+  for (const name of ['L01_ДЗ.pdf', 'Lesson 1-homework.docx', 'LSN01_domashnee_zadanie.pdf', 'L01_Домашнее задание.pdf']) {
+    assert.deepEqual(u.classifyFile(name), { code: 'L01', kind: 'homework' }, name);
+  }
+  for (const name of ['LSN01-INTRO.pdf', 'L01_notes.pdf', 'L01_myhomeworkbook.pdf', 'L01_домашняя библиотека.pdf']) {
+    assert.equal(u.classifyFile(name).kind, 'file', name);
+  }
+  const existing = { name: 'L01_ДЗ.pdf', lessonId: 'manual-lesson' };
+  const before = structuredClone(existing);
+  assert.equal(u.resolveFileLessonId(existing.name, 'L01', [{ id: 'first', code: 'L01' }, { id: 'manual-lesson', code: 'L02' }], existing), 'manual-lesson');
+  assert.deepEqual(existing, before);
+});
+
+test('handed-off lessons without optional fact dates do not create recording or preparation tasks', () => {
+  const course = u.createCourse('Курс', 4, 1), now = u.today(course.timezone);
+  const [ready, taken, published, assembling] = course.lessons;
+  ready.stage = 'ready'; taken.stage = 'taken'; published.stage = 'published';
+  for (const lesson of [ready, taken, published]) lesson.scheduledDate = u.addDays(now, 1);
+  let metrics = u.getMetrics(course);
+  assert.equal(metrics.nextLesson, null);
+  assert.deepEqual(metrics.prepDue, []);
+  assert.deepEqual(metrics.overdueRecords, []);
+  assembling.scheduledDate = u.addDays(now, 3);
+  metrics = u.getMetrics(course);
+  assert.equal(metrics.nextLesson.id, assembling.id);
+  assert.deepEqual(metrics.prepDue, []);
+  for (const lesson of [ready, taken, published]) lesson.scheduledDate = u.addDays(now, -3);
+  metrics = u.getMetrics(course);
+  assert.equal(metrics.nextLesson.id, assembling.id);
+  assert.deepEqual(metrics.overdueRecords, []);
+  assert.deepEqual(metrics.prepDue, []);
+  assembling.scheduledDate = u.addDays(now, -3);
+  metrics = u.getMetrics(course);
+  assert.deepEqual(metrics.overdueRecords.map((lesson: { id: string }) => lesson.id), [assembling.id]);
+  assert.deepEqual(metrics.prepDue.map((lesson: { id: string }) => lesson.id), [assembling.id]);
+  assert.equal(metrics.recorded, 0);
+  assert.equal(metrics.percent, 0);
+  assert.equal(metrics.remaining, 4);
+  assert.equal(metrics.thisWeek, 0);
+  assert.equal(metrics.minutes, 0);
+  assert.equal(course.lessons.every((lesson: { recordedOn: string | null }) => lesson.recordedOn === null), true);
+});
+
+test('draft timecodes do not block handoff and supplied timecodes are checked only for publishing', () => {
+  const course = u.createCourse('Курс', 1, 1), lesson = course.lessons[0];
+  lesson.homework = ['Задание'];
+  lesson.videoId = 'video-1';
+  course.assets.push({ id: 'video-1', name: 'L01.mp4', size: 1024, mime: 'video/mp4', kind: 'video', lessonId: lesson.id, url: 'https://example.test/video.mp4', createdAt: course.createdAt });
+  assert.deepEqual(u.checkLessonReadiness(course, lesson, { forPublication: true }), []);
+  lesson.timecodes = '00:00 Начало'; lesson.timecodesStatus = 'draft'; lesson.timecodesVideoId = 'old-video';
+  assert.deepEqual(u.checkLessonReadiness(course, lesson), []);
+  assert.equal(u.checkLessonReadiness(course, lesson, { forPublication: true }).some((item: string) => item.includes('тайм-коды')), true);
+  lesson.timecodesStatus = 'checked';
+  assert.equal(u.checkLessonReadiness(course, lesson, { forPublication: true }).length, 1);
+  lesson.timecodesVideoId = lesson.videoId;
+  assert.deepEqual(u.checkLessonReadiness(course, lesson, { forPublication: true }), []);
+  lesson.homework = [];
+  assert.equal(u.checkLessonReadiness(course, lesson).some((item: string) => item.includes('домашнее задание')), true);
+});
+
 console.log(`Passed ${suite.length} domain checks:\n${suite.map(name => '• ' + name).join('\n')}`);

@@ -26,6 +26,13 @@
 .lesson-editor button:focus-visible, .lesson-editor a:focus-visible, .lesson-editor input:focus-visible, .lesson-editor select:focus-visible, .lesson-editor textarea:focus-visible, .lesson-editor summary:focus-visible, .lesson-editor [role=tabpanel]:focus-visible { outline: 2px solid var(--le-accent); outline-offset: 4px; }
 .lesson-editor h3, .lesson-editor h4, .lesson-editor p { margin: 0; }
 .lesson-editor svg { flex-shrink: 0; }
+.lesson-editor-file-link { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 36px; padding: 6px 9px; border: 1px solid var(--le-line); border-radius: 3px; color: var(--le-accent); font-size: 11px; text-decoration: none; }
+.lesson-editor-file-link:hover { background: var(--le-soft); }
+.lesson-editor-homework-files { margin: 20px 0; padding: 15px; border: 1px solid var(--le-line); border-radius: 3px; }
+.lesson-editor-homework-files h4 { font-size: 13px; font-weight: 500; }
+.lesson-editor-homework-files p { display: flex; gap: 9px; align-items: center; margin-top: 12px; font-size: 12px; }
+.lesson-editor-homework-files p > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+@media (max-width: 760px) { .lesson-editor-file-link { min-height: 44px; } }
 .lesson-editor-header { flex-shrink: 0; border-bottom: 1px solid var(--le-line); background: var(--le-bg); padding: 21px 30px 22px; }
 .lesson-editor-header-inner { position: relative; max-width: 1160px; margin: 0 auto; }
 .lesson-editor-breadcrumb { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; font-size: 12px; color: var(--le-muted); padding-right: 47px; margin-bottom: 16px; }

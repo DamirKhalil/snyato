@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { ArrowLeft, ArrowRight, Check, CheckCheck, ChevronDown, CircleCheck, CircleDashed, Clipboard, Copy, Download, FileText, Film, FolderOpen, Link2, Plus, Save, Trash2, Upload, X } from 'lucide-react';
 import { STAGE_LABELS, type Course, type Lesson, type StudioAsset, type StudioUser } from './studio-model';
-import { getDeliveryStatus } from './studio-utils';
+import { getDeliveryStatus, checkLessonReadiness, getHomeworkMaterials, lessonHasHomework, getLessonVideo } from './studio-utils';
 import { mergeLessonDraft } from './lesson-draft';
 import './lesson-editor.css';
 
@@ -18,16 +18,16 @@ type Props = {
 };
 
 const assetLabels: Record<StudioAsset['kind'], string> = {
-  video: 'Запись', slides: 'Презентация', file: 'Приложенные файлы', source: 'Исходники', outline: 'План урока',
+  video: 'Запись', slides: 'Презентация', homework: 'Домашнее задание', file: 'Приложенные файлы', source: 'Исходники', outline: 'План урока',
 };
-const assetOrder: StudioAsset['kind'][] = ['video', 'slides', 'outline', 'file', 'source'];
+const assetOrder: StudioAsset['kind'][] = ['video', 'homework', 'slides', 'outline', 'file', 'source'];
 type EditorTab = 'plan' | 'homework' | 'materials' | 'timecodes';
 const cloneLesson = (lesson: Lesson): Lesson => ({ ...lesson, homework: [...lesson.homework], links: lesson.links.map(link => ({ ...link })) });
 const signature = (lesson: Lesson) => JSON.stringify(lesson);
 
 function safeUrl(value: string) {
   if (/^\/api\/assets\/[a-zA-Z0-9_-]+$/.test(value)) return value;
-  try { const url = new URL(value); return ['http:', 'https:'].includes(url.protocol) ? url.href : ''; } catch { return ''; }
+  try { const url = new URL(value); return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password ? url.href : ''; } catch { return ''; }
 }
 function niceDate(value: string | null) {
   if (!value) return 'Не назначена';
@@ -44,7 +44,7 @@ function fileSize(size: number) {
   return size >= 1024 * 1024 ? `${(size / 1024 / 1024).toLocaleString('ru-RU', { maximumFractionDigits: 1 })} МБ` : `${Math.max(1, Math.round(size / 1024))} КБ`;
 }
 function videoLinkSignature(links: Lesson['links']) {
-  return links.filter(link => /видео|запис/i.test(link.name)).map(link => link.url.trim()).join('|');
+  return links.filter(link => /видео|запис|video|recording/i.test(link.name)).map(link => link.url.trim()).join('|');
 }
 
 export default function LessonEditor({ course, lesson, onChange, onClose, onUpload, onRemoveAsset, user }: Props) {
@@ -68,21 +68,22 @@ export default function LessonEditor({ course, lesson, onChange, onClose, onUplo
   const dirty = signature(draft) !== baseRef.current;
   const assets = course.assets.filter(asset => asset.lessonId === draft.id);
   const videos = assets.filter(asset => asset.kind === 'video');
-  const selectedVideo = videos.find(asset => asset.id === draft.videoId);
-  const staleTimecodes = !!draft.timecodes.trim() && (draft.videoId ? draft.timecodesVideoId !== draft.videoId : !!draft.timecodesVideoId && !draft.timecodesVideoId.startsWith('link:'));
-  const hasVideo = !!selectedVideo || draft.links.some(link => /видео|запис/i.test(link.name) && safeUrl(link.url));
+  const videoSource = getLessonVideo(course, draft);
+  const selectedVideo = videoSource.asset;
+  const staleTimecodes = !!draft.timecodes.trim() && (selectedVideo ? draft.timecodesVideoId !== selectedVideo.id : !!draft.timecodesVideoId && !draft.timecodesVideoId.startsWith('link:'));
+  const hasVideo = !!videoSource.asset || !!videoSource.link;
   const hasOutline = !!draft.outline.trim() || assets.some(asset => asset.kind === 'outline') || draft.links.some(link => /план|сценарий|outline/i.test(link.name) && safeUrl(link.url));
   const hasSlides = assets.some(asset => asset.kind === 'slides') || draft.links.some(link => /презентац|slides/i.test(link.name) && safeUrl(link.url));
+  const homeworkMaterials = getHomeworkMaterials(course, draft);
+  const hasHomework = lessonHasHomework(course, draft);
   const readiness = [
-    { label: 'Запись', ready: !!draft.recordedOn && hasVideo },
-    { label: 'План урока', ready: draft.outlineReady && hasOutline },
-    { label: 'Домашнее задание', ready: draft.homework.some(item => item.trim()) },
-    { label: draft.slidesRequired ? 'Презентация' : 'Без презентации', ready: !draft.slidesRequired || (draft.slidesReady && hasSlides) },
+    { label: 'Видео', ready: hasVideo },
+    { label: 'Домашнее задание', ready: hasHomework },
   ];
   const readyCount = readiness.filter(item => item.ready).length;
   const tabs: { id: EditorTab; label: string }[] = [
     { id: 'plan', label: 'План' },
-    { id: 'homework', label: `ДЗ · ${draft.homework.filter(item => item.trim()).length}` },
+    { id: 'homework', label: `ДЗ · ${homeworkMaterials.text.length + homeworkMaterials.assets.length + homeworkMaterials.links.length}` },
     { id: 'materials', label: `Материалы · ${assets.length}` },
     { id: 'timecodes', label: 'Тайм-коды' },
   ];
@@ -169,17 +170,8 @@ export default function LessonEditor({ course, lesson, onChange, onClose, onUplo
     if (dirty) setCloseRequested(true); else onClose();
   }
 
-  function publicationErrors(next: Lesson) {
-    const problems: string[] = [];
-    if (!next.title.trim()) problems.push('Добавь название урока.');
-    if (!next.recordedOn) problems.push('Укажи фактическую дату записи.');
-    if (!next.homework.some(item => item.trim())) problems.push('Добавь хотя бы одно домашнее задание.');
-    const hasVideo = videos.some(item => item.id === next.videoId) || next.links.some(link => /видео|запис/i.test(link.name) && safeUrl(link.url));
-    if (!hasVideo) problems.push('Выбери запись в материалах или добавь ссылку с подписью «Видео урока».');
-    if (!next.outlineReady || !(next.outline.trim() || assets.some(item => item.kind === 'outline') || next.links.some(link => /план|сценарий|outline/i.test(link.name) && safeUrl(link.url)))) problems.push('Добавь план урока и отметь его готовым.');
-    if (next.slidesRequired && !next.slidesReady) problems.push('Отметь презентацию готовой либо укажи, что она не требуется.');
-    if (next.slidesRequired && !assets.some(item => item.kind === 'slides') && !next.links.some(link => /презентац|slides/i.test(link.name) && safeUrl(link.url))) problems.push('Прикрепи презентацию или добавь ссылку на неё.');
-    return problems;
+  function publicationErrors(next: Lesson, forPublication = false) {
+    return checkLessonReadiness(course, next, { forPublication });
   }
 
   async function commit(stage?: Lesson['stage'], close = false, acceptChanges = false) {
@@ -199,7 +191,7 @@ export default function LessonEditor({ course, lesson, onChange, onClose, onUplo
     const currentDate = new Intl.DateTimeFormat('en-CA', { year: 'numeric', month: '2-digit', day: '2-digit', timeZone: course.timezone }).format(new Date());
     if (clean.recordedOn && clean.recordedOn > currentDate) { setError('Фактическая дата записи не может находиться в будущем.'); return; }
     if (stage && stage !== 'assembling') {
-      const problems = publicationErrors(clean);
+      const problems = publicationErrors(clean, stage === 'published');
       if (problems.length) { setError(problems.join(' ')); return; }
     }
     if (stage === 'published' && clean.timecodes.trim() && (clean.timecodesStatus !== 'checked' || staleTimecodes)) {
@@ -301,7 +293,8 @@ export default function LessonEditor({ course, lesson, onChange, onClose, onUplo
 
                   {tab === 'homework' && <section className="lesson-editor-section">
                     <div className="lesson-editor-section-title"><h3>Задания для учеников</h3><button type="button" className="lesson-editor-text-button" onClick={() => update('homework', [...draft.homework, ''])}><Plus size={16} />Добавить</button></div>
-                    {draft.homework.length ? draft.homework.map((homework, index) => <div className="lesson-editor-homework" key={index}><div><label htmlFor={`lesson-${draft.id}-homework-${index}`}>Задание {index + 1}</label><button type="button" className="lesson-editor-text-button" aria-label={`Удалить задание ${index + 1}`} onClick={() => update('homework', draft.homework.filter((_, itemIndex) => itemIndex !== index))}><Trash2 size={14} />Убрать</button></div><textarea id={`lesson-${draft.id}-homework-${index}`} value={homework} rows={5} onChange={event => update('homework', draft.homework.map((text, itemIndex) => itemIndex === index ? event.target.value : text))} placeholder="Что сделать ученику и какой результат прислать?" /></div>) : <button type="button" className="lesson-editor-empty-action" onClick={() => update('homework', [''])}><Plus size={20} /><span>Добавить первое задание</span></button>}
+                    {draft.homework.length ? draft.homework.map((homework, index) => <div className="lesson-editor-homework" key={index}><div><label htmlFor={`lesson-${draft.id}-homework-${index}`}>Задание {index + 1}</label><button type="button" className="lesson-editor-text-button" aria-label={`Удалить задание ${index + 1}`} onClick={() => update('homework', draft.homework.filter((_, itemIndex) => itemIndex !== index))}><Trash2 size={14} />Убрать</button></div><textarea id={`lesson-${draft.id}-homework-${index}`} value={homework} rows={5} onChange={event => update('homework', draft.homework.map((text, itemIndex) => itemIndex === index ? event.target.value : text))} placeholder="Что сделать ученику и какой результат прислать?" /></div>) : <button type="button" className="lesson-editor-empty-action" onClick={() => update('homework', [''])}><Plus size={20} /><span>{hasHomework ? 'Добавить задание текстом' : 'Добавить первое задание'}</span></button>}
+                    {(homeworkMaterials.assets.length > 0 || homeworkMaterials.links.length > 0) && <div className="lesson-editor-homework-files"><h4>Файлы и ссылки ДЗ</h4>{homeworkMaterials.assets.map(asset => <p key={asset.id}><FileText size={15}/><span>{asset.name}</span><button type="button" className="lesson-editor-text-button" onClick={() => setTab('materials')}>К файлу <ArrowRight size={14}/></button></p>)}{homeworkMaterials.links.map((link,index) => <p key={index}><Link2 size={15}/><a href={safeUrl(link.url)} target="_blank" rel="noopener noreferrer">{link.name}</a></p>)}</div>}
                     <p className="lesson-editor-help">Задания можно подготовить до записи. При передаче специалист получит сохранённую редакцию вместе с материалами урока.</p>
                   </section>}
 
@@ -312,7 +305,7 @@ export default function LessonEditor({ course, lesson, onChange, onClose, onUplo
                     {assetOrder.map(kind => {
                       const group = assets.filter(asset => asset.kind === kind);
                       if (!group.length) return null;
-                      return <div className="lesson-editor-asset-group" key={kind}><h4>{assetLabels[kind]}</h4>{group.map(asset => <div key={asset.id} className={`lesson-editor-asset ${asset.id === draft.videoId ? 'is-selected' : ''}`}><span className="lesson-editor-file-icon">{kind === 'video' ? <Film size={19} /> : <FileText size={19} />}</span><div className="lesson-editor-asset-name"><strong>{asset.name}</strong><small>{fileSize(asset.size)}{asset.source === 'dropbox' ? ' · Dropbox' : ''}{asset.id === draft.videoId ? ' · Актуальная запись' : ''}</small></div><div className="lesson-editor-asset-actions">{kind === 'video' && <button type="button" onClick={() => update('videoId', asset.id)} className="lesson-editor-pick-video" aria-pressed={draft.videoId === asset.id}>{draft.videoId === asset.id ? <><Check size={14} />Выбрано</> : 'Выбрать'}</button>}{safeUrl(asset.url) && <a className="lesson-editor-icon-button" href={safeUrl(asset.url)} target="_blank" rel="noopener noreferrer" download={asset.name} aria-label={`Открыть ${asset.name}`}><Download size={16} /></a>}{user.role === 'owner' && <button type="button" className="lesson-editor-icon-button" onClick={() => onRemoveAsset(asset.id)} aria-label={`Удалить файл ${asset.name}`}><Trash2 size={15} /></button>}</div></div>)}</div>;
+                      return <div className="lesson-editor-asset-group" key={kind}><h4>{assetLabels[kind]}</h4>{group.map(asset => <div key={asset.id} className={`lesson-editor-asset ${asset.id === draft.videoId ? 'is-selected' : ''}`}><span className="lesson-editor-file-icon">{kind === 'video' ? <Film size={19} /> : <FileText size={19} />}</span><div className="lesson-editor-asset-name"><strong>{asset.name}</strong><small>{fileSize(asset.size)}{asset.source === 'dropbox' ? ' · Dropbox' : ''}{asset.id === draft.videoId ? ' · Актуальная запись' : ''}</small></div><div className="lesson-editor-asset-actions">{kind === 'video' && <button type="button" onClick={() => update('videoId', asset.id)} className="lesson-editor-pick-video" aria-pressed={draft.videoId === asset.id}>{draft.videoId === asset.id ? <><Check size={14} />Выбрано</> : 'Выбрать'}</button>}{safeUrl(asset.url) && <a className="lesson-editor-file-link" href={safeUrl(asset.url)} target={asset.source === 'dropbox' ? '_blank' : undefined} rel="noopener noreferrer" download={asset.source === 'dropbox' ? undefined : asset.name} aria-label={(asset.source === 'dropbox' ? asset.directLink ? 'Открыть файл в Dropbox: ' : 'Открыть папку Dropbox для ' : 'Скачать ') + asset.name}>{asset.source === 'dropbox' ? <FolderOpen size={16}/> : <Download size={16}/>}<span>{asset.source === 'dropbox' ? asset.directLink ? 'Открыть в Dropbox' : 'Папка Dropbox' : 'Скачать'}</span></a>}{user.role === 'owner' && <button type="button" className="lesson-editor-icon-button" onClick={() => onRemoveAsset(asset.id)} aria-label={`Удалить файл ${asset.name}`}><Trash2 size={15} /></button>}</div></div>)}</div>;
                     })}
                     <p className="lesson-editor-help">Видео до 10 ГБ можно загрузить файлом. Для записи в Dropbox или другом сервисе добавь ссылку с подписью «Видео урока».</p>
                     <div className="lesson-editor-presentation"><h4>Презентация</h4><label className="lesson-editor-check"><input type="checkbox" checked={draft.slidesRequired} onChange={event => update('slidesRequired', event.target.checked)} /><span>Для урока нужна презентация<small>Изменение не удаляет уже добавленные файлы.</small></span></label>{draft.slidesRequired ? <label className="lesson-editor-check"><input type="checkbox" checked={draft.slidesReady} onChange={event => update('slidesReady', event.target.checked)} /><span>Презентация готова к записи<small>Прикрепи PPTX или PDF либо добавь ссылку на презентацию.</small></span></label> : <p className="lesson-editor-help">В этом уроке презентация не предусмотрена.</p>}</div>
@@ -326,7 +319,7 @@ export default function LessonEditor({ course, lesson, onChange, onClose, onUplo
                     {staleTimecodes && <div className="lesson-editor-warning" role="status">Оглавление связано с другой версией записи. Проверь временные отметки.</div>}
                     <label className="lesson-editor-field"><span>Тайм-код — название раздела</span><textarea className="lesson-editor-textarea lesson-editor-timecodes" value={draft.timecodes} onChange={event => update('timecodes', event.target.value)} rows={10} placeholder={'00:00 Что создадим на занятии\n04:20 Выбираем рабочую задачу\n12:35 Переходим к практике'} /></label>
                     <div className="lesson-editor-timecode-footer"><button type="button" className="lesson-editor-text-button" onClick={() => void copyTimecodes()} disabled={!draft.timecodes.trim()}>{copied ? <Check size={16} /> : <Copy size={16} />}{copied ? 'Скопировано' : 'Копировать оглавление'}</button><span><Clipboard size={15} />Ручная разметка</span></div>
-                    <label className="lesson-editor-check"><input type="checkbox" disabled={!hasVideo || !draft.timecodes.trim()} checked={draft.timecodesStatus === 'checked' && !staleTimecodes} onChange={event => setDraft(previous => ({ ...previous, timecodesStatus: event.target.checked ? 'checked' : 'draft', timecodesVideoId: event.target.checked ? previous.videoId : previous.timecodesVideoId }))} /><span>Тайм-коды проверены<small>{hasVideo ? 'Сверены с актуальной записью урока.' : 'Сначала выбери запись или добавь ссылку на видео в материалах.'}</small></span></label>
+                    <label className="lesson-editor-check"><input type="checkbox" disabled={!hasVideo || !draft.timecodes.trim()} checked={draft.timecodesStatus === 'checked' && !staleTimecodes} onChange={event => setDraft(previous => ({ ...previous, timecodesStatus: event.target.checked ? 'checked' : 'draft', timecodesVideoId: event.target.checked ? (videos.some(video => video.id === previous.videoId) ? previous.videoId : null) : previous.timecodesVideoId }))} /><span>Тайм-коды проверены<small>{hasVideo ? 'Сверены с актуальной записью урока.' : 'Сначала выбери запись или добавь ссылку на видео в материалах.'}</small></span></label>
                     <p className="lesson-editor-help">Оглавление — отдельный материал для учеников. Автоматическая расшифровка пока не подключена. При замене записи тайм-коды нужно проверить заново.</p>
                   </section>}
                 </div>
@@ -334,8 +327,8 @@ export default function LessonEditor({ course, lesson, onChange, onClose, onUplo
             </div>
 
             <aside className="lesson-editor-sidebar" aria-label="Готовность, график и передача урока">
-              <section className="lesson-editor-sidebar-section"><div className="lesson-editor-section-title"><h3>Готовность комплекта</h3><span className="lesson-editor-readiness-count">{readyCount} / {readiness.length}</span></div><div className="lesson-editor-readiness">{readiness.map(item => <div key={item.label} className={item.ready ? 'is-ready' : ''}>{item.ready ? <CircleCheck size={16} /> : <CircleDashed size={16} />}<span>{item.label}</span></div>)}</div><p className="lesson-editor-help">{readyCount === readiness.length ? 'Обязательный состав комплекта собран.' : 'Для передачи нужны запись, готовый план, задание и презентация, если она требуется.'}</p>{draft.timecodes.trim() && <p className="lesson-editor-timecodes-note">Тайм-коды: {draft.timecodesStatus === 'checked' && !staleTimecodes ? 'проверены' : 'черновик'}. Проверка обязательна до размещения.</p>}</section>
-              <section className="lesson-editor-sidebar-section lesson-editor-handoff"><h3>Передача команде</h3><div className="lesson-editor-handoff-content"><strong>{STAGE_LABELS[draft.stage]}</strong><p>{draft.stage === 'assembling' ? 'Собери комплект и передай его на размещение.' : draft.stage === 'ready' ? 'Комплект доступен команде. Специалист может забрать его в работу.' : draft.stage === 'taken' ? `${draft.assignee || 'Специалист'}${draft.takenAt ? ` · с ${new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: course.timezone }).format(new Date(draft.takenAt))}` : ''}` : `${draft.assignee || 'Команда'} завершил(а) размещение.`}</p>{draft.submittedAt && <p className="lesson-editor-submitted">Впервые передан<br />{new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: course.timezone }).format(new Date(draft.submittedAt))}</p>}{draft.stage === 'assembling' && <button type="button" className="lesson-editor-workflow-button" onClick={() => commit('ready')} disabled={uploading || remoteChanged}>Передать комплект<ArrowRight size={17} /></button>}{draft.stage === 'ready' && <button type="button" className="lesson-editor-workflow-button" onClick={() => commit('taken')} disabled={uploading || remoteChanged}>Беру в работу<Check size={17} /></button>}{draft.stage === 'taken' && <button type="button" className="lesson-editor-workflow-button" onClick={() => commit('published')} disabled={uploading || remoteChanged}>Размещено<CheckCheck size={17} /></button>}{draft.stage === 'published' && <span className="lesson-editor-published-stamp"><CheckCheck size={18} />Размещено</span>}</div></section>
+              <section className="lesson-editor-sidebar-section"><div className="lesson-editor-section-title"><h3>Готовность комплекта</h3><span className="lesson-editor-readiness-count">{readyCount} / {readiness.length}</span></div><div className="lesson-editor-readiness">{readiness.map(item => <div key={item.label} className={item.ready ? 'is-ready' : ''}>{item.ready ? <CircleCheck size={16} /> : <CircleDashed size={16} />}<span>{item.label}</span></div>)}</div><p className="lesson-editor-help">{readyCount === readiness.length ? 'Обязательный комплект собран: видео и ДЗ.' : 'Для передачи нужны видео и домашнее задание. План, презентация и остальные материалы — по необходимости.'}</p>{draft.timecodes.trim() && <p className="lesson-editor-timecodes-note">Тайм-коды: {draft.timecodesStatus === 'checked' && !staleTimecodes ? 'проверены' : 'черновик'}. Проверка обязательна до размещения.</p>}</section>
+              <section className="lesson-editor-sidebar-section lesson-editor-handoff"><h3>Передача команде</h3><div className="lesson-editor-handoff-content"><strong>{STAGE_LABELS[draft.stage]}</strong><p>{draft.stage === 'assembling' ? 'Добавь видео и ДЗ, затем передай комплект команде.' : draft.stage === 'ready' ? 'Комплект доступен команде. Специалист может забрать его в работу.' : draft.stage === 'taken' ? `${draft.assignee || 'Специалист'}${draft.takenAt ? ` · с ${new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: course.timezone }).format(new Date(draft.takenAt))}` : ''}` : `${draft.assignee || 'Команда'} завершил(а) размещение.`}</p>{draft.submittedAt && <p className="lesson-editor-submitted">Впервые передан<br />{new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: course.timezone }).format(new Date(draft.submittedAt))}</p>}{draft.stage === 'assembling' && <button type="button" className="lesson-editor-workflow-button" onClick={() => commit('ready')} disabled={uploading || remoteChanged}>Передать комплект<ArrowRight size={17} /></button>}{draft.stage === 'ready' && <button type="button" className="lesson-editor-workflow-button" onClick={() => commit('taken')} disabled={uploading || remoteChanged}>Ушло в работу<Check size={17} /></button>}{draft.stage === 'taken' && <button type="button" className="lesson-editor-workflow-button" onClick={() => commit('published')} disabled={uploading || remoteChanged}>Размещено<CheckCheck size={17} /></button>}{draft.stage === 'published' && <span className="lesson-editor-published-stamp"><CheckCheck size={18} />Размещено</span>}</div></section>
               <section className="lesson-editor-sidebar-section lesson-editor-schedule"><h3>График урока</h3><div className="lesson-editor-baseline"><span>Первоначальный план</span><strong>{niceDate(draft.baselineDate)}</strong><small>{draft.baselineDate ? 'Сохранён при утверждении графика' : course.baselineLockedAt ? 'Урок добавлен после утверждения' : 'График ещё не утверждён'}</small></div><label className="lesson-editor-field"><span>Текущая дата записи</span><input type="date" disabled={!!lesson.recordedOn} value={draft.scheduledDate ?? ''} onInput={event => update('scheduledDate', event.currentTarget.value || null)} onChange={event => update('scheduledDate', event.target.value || null)} /></label><label className="lesson-editor-field"><span>Фактически записан</span><input type="date" max={todayForCourse} value={draft.recordedOn ?? ''} onInput={event => update('recordedOn', event.currentTarget.value || null)} onChange={event => update('recordedOn', event.target.value || null)} /></label><label className="lesson-editor-field"><span>Длительность, минут</span><input type="number" min="0" max="10000" value={draft.durationMinutes || ''} onChange={event => update('durationMinutes', Number(event.target.value))} placeholder="Например, 45" /></label><p className="lesson-editor-help">{lesson.recordedOn ? 'Текущая дата уже записанного урока сохранена.' : 'Перенос записи пересчитывает подготовку D−2.'} Факт записи учитывается в прогрессе и может отличаться от даты загрузки видео.</p><div className={`lesson-editor-delivery ${deliveryUrgent ? 'is-urgent' : ''}`}><label className="lesson-editor-field"><span>Сдать комплект до</span><input type="date" value={draft.deliveryDeadline ?? ''} onInput={event => update('deliveryDeadline', event.currentTarget.value || null)} onChange={event => update('deliveryDeadline', event.target.value || null)} /></label><strong>{delivery.label}</strong><p>Полный комплект должен быть передан техспециалисту к этой дате. Перенос записи не меняет дедлайн.</p></div></section>
               <section className="lesson-editor-history"><h3>История урока</h3>{course.history.filter(entry => entry.text.includes(draft.code)).slice(0,3).map(entry => <div key={entry.id}><time dateTime={entry.at}>{new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'short', timeZone: course.timezone }).format(new Date(entry.at))}</time><p>{entry.text}</p></div>)}{!course.history.some(entry => entry.text.includes(draft.code)) && <p className="lesson-editor-help">Изменения урока появятся здесь после сохранения.</p>}</section>
             </aside>
